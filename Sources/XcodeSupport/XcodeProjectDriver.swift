@@ -4,8 +4,9 @@ import PeripheryKit
 import Shared
 
 public final class XcodeProjectDriver {
-    public static func make() throws -> Self {
-        let configuration: Configuration = inject()
+    public static func make(
+        configuration: Configuration = inject()
+    ) throws -> Self {
         try validateConfiguration(configuration: configuration)
 
         let project: XcodeProjectlike
@@ -27,11 +28,17 @@ public final class XcodeProjectDriver {
         }
 
         // Ensure schemes exist within the project
-        let schemes = try project.schemes().filter { configuration.schemes.contains($0.name) }
-        let validSchemeNames = Set(schemes.map { $0.name })
+        // if building may actually occur
+        let schemes: Set<XcodeScheme>
+        if configuration.requiresSchemes {
+            schemes = try project.schemes().filter { configuration.schemes.contains($0.name) }
+            let validSchemeNames = Set(schemes.map { $0.name })
 
-        if let scheme = Set(configuration.schemes).subtracting(validSchemeNames).first {
-            throw PeripheryError.invalidScheme(name: scheme, project: project.path.lastComponent?.string ?? "")
+            if let scheme = Set(configuration.schemes).subtracting(validSchemeNames).first {
+                throw PeripheryError.invalidScheme(name: scheme, project: project.path.lastComponent?.string ?? "")
+            }
+        } else {
+            schemes = []
         }
 
         return self.init(
@@ -80,7 +87,7 @@ public final class XcodeProjectDriver {
             throw PeripheryError.usageError(message)
         }
 
-        guard !configuration.schemes.isEmpty else {
+        guard !(configuration.schemes.isEmpty && configuration.requiresSchemes) else {
             throw PeripheryError.usageError("The '--schemes' option is required.")
         }
 
@@ -92,6 +99,8 @@ public final class XcodeProjectDriver {
 
 extension XcodeProjectDriver: ProjectDriver {
     public func build() throws {
+        guard !configuration.skipBuild else { return }
+
         // Ensure test targets are built by chosen schemes
         let testTargetNames = targets.filter { $0.isTestTarget }.map { $0.name }
 
@@ -103,8 +112,6 @@ extension XcodeProjectDriver: ProjectDriver {
                 throw PeripheryError.testTargetsNotBuildable(names: missingTestTargets)
             }
         }
-
-        guard  !configuration.skipBuild else { return }
 
         if configuration.cleanBuild {
             try xcodebuild.removeDerivedData(for: project, allSchemes: Array(schemes))
@@ -155,5 +162,13 @@ extension XcodeProjectDriver: ProjectDriver {
         try InfoPlistIndexer.make(infoPlistFiles: infoPlistFiles, graph: graph).perform()
 
         graph.indexingComplete()
+    }
+}
+
+// MARK: Util
+
+private extension Configuration {
+    var requiresSchemes: Bool {
+        !skipBuild || indexStorePath == nil
     }
 }
